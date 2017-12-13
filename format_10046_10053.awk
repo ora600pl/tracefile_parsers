@@ -56,6 +56,7 @@ BEGIN {
 	{
 		cursor_no="WAIT " $4;
 		cursor_no_close="CLOSE " $4;
+		cursor_stat = "STAT " $4;
 	}
 	else if($0 ~ "dep=0" && $0 ~ "oct=3")
 	{
@@ -73,8 +74,7 @@ BEGIN {
 	event_time=substr(event_time1,1,index(event_time1," ")-1);
 	events[event_name]+=event_time;
 	event_cnt[event_name]++;
-
-
+	
 	event_time_m=event_time/1000;
 	if(event_time_m<=1)
 	{
@@ -113,7 +113,7 @@ BEGIN {
 }
 # Printing wait event info at cursor close
 {
-  if($0 ~ cursor_no_close) {
+  if($0 ~ cursor_no_close || $0 ~ cursor_stat) {
 	br=0;
 	n=asorti(event_hist,event_hist_s);
 	for(i=1 ; i<=n ; i++ ) {
@@ -159,7 +159,8 @@ BEGIN {
 		print obj " elapsed time (us): " object_wait[obj];
 	}
 	cursor_no_close="END of this parsing";
-	cursor_no="END of this parsing";	
+	cursor_no="END of this parsing";
+	cursor_stat="END of this parsing";
 	delete event_hist;
 	delete event_hist_s;
 	delete event_cnt;
