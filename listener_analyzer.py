@@ -8,7 +8,7 @@ from datetime import timedelta
 from plotly import tools
 
 class ListenerLog(object):
-    def __init__(self, dirname, name_pattern, date_from, date_to, interval=3600):
+    def __init__(self, dirname, name_pattern, date_from, date_to, interval=3600, service_filter=None):
         self.dirname = dirname
         self.name_pattern = name_pattern
 
@@ -30,10 +30,10 @@ class ListenerLog(object):
                 for log_line in listener_log:
                     log_fields = log_line.split("*")
 
-                    if len(log_fields) > 3 and log_fields[-3].strip() == "establish":
+                    if len(log_fields) > 3 and log_fields[-3].strip() == "establish"\
+                            and (service_filter is None or log_line.find(service_filter) > 0 ):
                         date = datetime.strptime(log_fields[0].strip(), "%d-%b-%Y %H:%M:%S")
                         date_bucket = datetime.fromtimestamp(date.timestamp() - (date.timestamp() % interval))
-
 
                         if date <= dt and date >= df:
                             hostname = log_fields[-4].strip()
@@ -84,7 +84,8 @@ class ListenerLog(object):
                                         line=dict(shape='hv'),
                                         ))
 
-        fig['layout'].update(title='Logons to database / hour based on LISTENER logs')
+            fig['layout'].update(title='Logons to database / hour based on LISTENER logs (Number of IP addresses: '
+                                       + str(len(data_y)) + ')')
 
         py.plot(fig, filename=self.name_pattern + ".html")
 
@@ -96,10 +97,13 @@ if __name__ == '__main__':
             lsnr = ListenerLog(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
         elif len(sys.argv) == 6:
             lsnr = ListenerLog(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]))
+        elif len(sys.argv) == 7:
+            lsnr = ListenerLog(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), sys.argv[6])
         #print(lsnr.conn_data)
         lsnr.plot()
     else:
         print("This script by Kamil Stawiarski (@ora600pl) is to help you with visualizing data from multiple listener log files")
         print("Usage:")
-        print("python listener_analyzer.py /path/to/logs/ pattern_to_filter_reports_by_name date_from[YYYYMMDD:HH24:MI] date_to[[YYYYMMDD:HH24:MI] {interval default = 3600s}")
+        print("python listener_analyzer.py /path/to/logs/ pattern_to_filter_reports_by_name date_from[YYYYMMDD:HH24:MI] "
+              "date_to[[YYYYMMDD:HH24:MI] {interval default = 3600s} {service name filter}")
         print("You have to install plotly first [pip install plotly]\n")
