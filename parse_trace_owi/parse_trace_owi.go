@@ -20,6 +20,7 @@ import (
 
 var DEBUG bool = false
 const layout = "2006-01-02 15:04:05.999"
+const layout2 = "2006-01-02T15:04:00.999999"
 
 func logme(what string) {
  if DEBUG {
@@ -93,9 +94,15 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 
 	for scanner.Scan() {
 		traceLine := scanner.Text()
+		traceWords := r.FindAllString(traceLine, -1)
 
 		if ti := rt.FindStringIndex(traceLine); ti != nil && !discoveredTraceDate {
-			traceTime, _ := time.Parse(layout, traceLine[4:])
+			var traceTime time.Time
+			if len(traceWords[1]) == 32 {
+				traceTime, _ = time.Parse(layout2, traceWords[1][0:26])
+			} else {
+				traceTime, _ = time.Parse(layout, traceLine[4:])
+			}
 			//_ = traceTime
 			//fmt.Println(traceTime_s)
 			//fmt.Println(tFs, tTs, tF, tT)
@@ -107,7 +114,6 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 		}
 
 		if strings.HasPrefix(traceLine, "WAIT #") {
-			traceWords := r.FindAllString(traceLine, -1)
 			eventName := traceWords[3]
 			eventEla, _ := strconv.Atoi(traceWords[5])
 			eventClassName := eventclass.GetClass(eventName)
