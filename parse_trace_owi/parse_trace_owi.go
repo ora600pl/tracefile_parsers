@@ -20,7 +20,7 @@ import (
 
 var DEBUG bool = false
 const layout = "2006-01-02 15:04:05.999"
-const layout2 = "2006-01-02T15:04:00.999999"
+const layout2 = "2006-01-02T15:04:05.999999"
 
 func logme(what string) {
  if DEBUG {
