@@ -53,6 +53,7 @@ type EventStats struct {
         StdDev float64
 	ElaTimes []int64
 	Worker int
+	SQLtimes map[string]float64
 }
 
 //calculate StdDev for events
@@ -92,6 +93,8 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 	scanner.Split(bufio.ScanLines)
 	discoveredTraceDate := false
 
+	cursorToSQLid := make(map[string]string)
+
 	for scanner.Scan() {
 		traceLine := scanner.Text()
 		traceWords := r.FindAllString(traceLine, -1)
@@ -103,9 +106,6 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 			} else {
 				traceTime, _ = time.Parse(layout, traceLine[4:])
 			}
-			//_ = traceTime
-			//fmt.Println(traceTime_s)
-			//fmt.Println(tFs, tTs, tF, tT)
 			if !(traceTime.After(tF) && traceTime.Before(tT)) {
 				logme("ignored file: " + traceFile)
 				return nil
@@ -128,6 +128,7 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 									  Avg: 0,
 									  StdDev: 0,
 									  Worker: -1,
+									  SQLtimes: make(map[string]float64),
 									  }
 				}
 				eventMap[eventName].EventName = eventName
@@ -137,7 +138,22 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 				eventMap[eventName].ElaTimes = append(eventMap[eventName].ElaTimes, int64(eventEla))
 				eventMap[eventName].Worker = workerId
 				eventMap[eventName].EventClass = eventClassName
+
+				cursor_id := traceWords[1][0:len(traceWords[1])-1]
+				if _, ok := cursorToSQLid[cursor_id]; ok {
+					if _, ok2 := eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]]; !ok2 {
+						eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]] = float64(eventEla)
+					} else {
+						eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]] += float64(eventEla)
+					}
+					logme("SQLID for cursor: " + cursor_id + " " + cursorToSQLid[cursor_id] + " " + eventName)
+				}
 			}
+		} else if strings.HasPrefix(traceLine, "PARSING IN CURSOR") {
+			cursor_id := traceWords[3]
+			sql_id := traceWords[len(traceWords)-1]
+			//logme("SQLID for cursor: " + cursor_id + " " + sql_id)
+			cursorToSQLid[cursor_id] = sql_id
 		}
 	}
 	return eventMap
@@ -156,6 +172,7 @@ func main() {
 	parallel := flag.Int("p", 1, "parallel degree")
 	timeFrom_s := flag.String("tf", "2020-01-01 00:00:00.100", "time from")
 	timeTo_s := flag.String("tt", "2020-01-02 00:00:00.100", "time to")
+	eventName := flag.String("event", "", "Display SQLids for specified event")
 
         flag.Parse()
 
@@ -254,6 +271,13 @@ func main() {
 				me[n.EventName].Count += n.Count
 				me[n.EventName].Avg = me[n.EventName].Sum / float64(me[n.EventName].Count)
 				me[n.EventName].ElaTimes = append(me[n.EventName].ElaTimes, n.ElaTimes...) //te 3. zeby zlaczyc 2 tablice
+				for sqlid, ela := range(n.SQLtimes) {
+					if _, ok := me[n.EventName].SQLtimes[sqlid]; !ok {
+						me[n.EventName].SQLtimes[sqlid] = ela
+					} else {
+						me[n.EventName].SQLtimes[sqlid] += ela
+					}
+				}
 			}
 			//me[n.EventName].CalcStdDev()
 		}
@@ -265,7 +289,16 @@ func main() {
 		ev.CalcStdDev()
 		events = append(events, *ev)
 	}
-	showStats(events)
+	if *eventName != "" {
+		sqlEla := float64(0)
+		fmt.Printf("SQLs for event %s\n", *eventName)
+		for sqlid, ela := range(me[*eventName].SQLtimes) {
+			fmt.Printf("%s\t\t%f\n", sqlid, ela/1000)
+			sqlEla += ela
+		}
+	} else {
+		showStats(events)
+	}
 	logme("Everythong took: " + fmt.Sprintf("%f", time.Now().Sub(tB).Seconds()*1000))
 }
 
