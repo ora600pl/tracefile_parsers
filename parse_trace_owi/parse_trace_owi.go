@@ -230,7 +230,7 @@ func main() {
 		tracefileChannel <- traceFiles[i]
 	}
 	close(tracefileChannel)
-	logme("chnnel tracefileChannel filled with file names - it will be used for parallel workers")
+	logme("chnnel tracefileChannel filled with file names - it will be used for parallel workers, a Rafal ma malego..")
 
 	waitChannel := make(chan MapEvents, *parallel)
 	var me MapEvents
@@ -242,7 +242,6 @@ func main() {
 		go func(wid int) {
 			t1 := time.Now()
 			logme("worker started " + strconv.Itoa(wid));
-			defer logme("worker stopped " + strconv.Itoa(wid) + fmt.Sprintf("\t time: %f", time.Now().Sub(t1).Seconds()*1000))
 			defer wg.Done()
 			for fname := range(tracefileChannel) {
 				events := parseTrace(fname, wid, tF, tT)
@@ -250,6 +249,7 @@ func main() {
 					waitChannel <- events
 				}
 			}
+			logme("worker stopped " + strconv.Itoa(wid) + fmt.Sprintf("\t time: %f", float64(time.Now().Sub(t1).Nanoseconds()/1000/1000)))
 		} (i)
 	}
 
@@ -299,6 +299,6 @@ func main() {
 	} else {
 		showStats(events)
 	}
-	logme("Everythong took: " + fmt.Sprintf("%f", time.Now().Sub(tB).Seconds()*1000))
+	fmt.Println("Everythong took: " + fmt.Sprintf("%f", time.Now().Sub(tB).Seconds()*1000))
 }
 
