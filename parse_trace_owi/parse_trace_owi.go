@@ -16,6 +16,8 @@ import (
 	"runtime/pprof"
 	"time"
 	"eventclass"
+	"encoding/gob"
+	"bytes"
        )
 
 var DEBUG bool = false
@@ -26,6 +28,14 @@ func logme(what string) {
  if DEBUG {
 	log.Println(what)
  }
+}
+
+func fileExists(filename string) bool {
+    info, err := os.Stat(filename)
+    if os.IsNotExist(err) {
+        return false
+    }
+    return !info.IsDir()
 }
 
 
@@ -66,6 +76,15 @@ type EventStatsSbSum []EventStats
 func (a EventStatsSbSum) Len() int           { return len(a) }
 func (a EventStatsSbSum) Less(i, j int) bool { return a[j].Sum > a[i].Sum }
 func (a EventStatsSbSum) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
+type SQLStat struct {
+	SQLid string
+	Ela float64
+}
+type SQLStats []SQLStat
+func (a SQLStats) Len() int           { return len(a) }
+func (a SQLStats) Less(i, j int) bool { return a[j].Ela > a[i].Ela }
+func (a SQLStats) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
 func showStats(events []EventStats) {
 	sort.Sort(EventStatsSbSum(events))
@@ -120,7 +139,6 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 
 			if eventClassName != "Idle" && eventClassName != "Other" {
 				if _, ok := eventMap[eventName]; !ok {
-					//logme("initializing empty eventMap for the first time")
 					eventMap[eventName] = &EventStats{EventName: "",
 									  EventClass: "",
 									  Sum: 0,
@@ -140,19 +158,23 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 				eventMap[eventName].EventClass = eventClassName
 
 				cursor_id := traceWords[1][0:len(traceWords[1])-1]
+				if cursor_id == "#140479009929120" && eventName == "'cursor: pin S wait on X'" {
+					_, tst := eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]]
+					logme("LOST: " + cursor_id + " " + eventName + " " + strconv.FormatBool(tst))
+				}
 				if _, ok := cursorToSQLid[cursor_id]; ok {
 					if _, ok2 := eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]]; !ok2 {
 						eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]] = float64(eventEla)
 					} else {
 						eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]] += float64(eventEla)
 					}
-					logme("SQLID for cursor: " + cursor_id + " " + cursorToSQLid[cursor_id] + " " + eventName)
+					logme("SQLID for cursor: " + cursor_id + " " + cursorToSQLid[cursor_id] + " " + eventName + " " + traceFile)
 				}
 			}
 		} else if strings.HasPrefix(traceLine, "PARSING IN CURSOR") {
 			cursor_id := traceWords[3]
 			sql_id := traceWords[len(traceWords)-1]
-			//logme("SQLID for cursor: " + cursor_id + " " + sql_id)
+			logme("SQLID for cursor: " + cursor_id + " " + sql_id)
 			cursorToSQLid[cursor_id] = sql_id
 		}
 	}
@@ -173,11 +195,19 @@ func main() {
 	timeFrom_s := flag.String("tf", "2020-01-01 00:00:00.100", "time from")
 	timeTo_s := flag.String("tt", "2020-01-02 00:00:00.100", "time to")
 	eventName := flag.String("event", "", "Display SQLids for specified event")
+	sqlId := flag.String("sqlid","", "Display wait events for sqlid")
 
         flag.Parse()
 
         tF, _ := time.Parse(layout, *timeFrom_s)
         tT, _ := time.Parse(layout, *timeTo_s)
+
+	saveFileName := *timeFrom_s + "_" + *timeTo_s
+	saveFileName = strings.ReplaceAll(saveFileName, ":", "")
+	saveFileName = strings.ReplaceAll(saveFileName, " ", "")
+	saveFileName = strings.ReplaceAll(saveFileName, "-", "")
+	saveFileName = strings.ReplaceAll(saveFileName, ".", "")
+	saveFileName = saveFileName + ".owisave"
 
 	if *debug == "true" {
 		DEBUG = true
@@ -205,98 +235,144 @@ func main() {
 	var traceFiles []string
 	root := *searchDir
 
-	//collect information about all trace files in a search directory
-        ferr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-                if err != nil {
-                        log.Panic(err)
-                }
-                if err == nil && !info.IsDir() && strings.HasSuffix(info.Name(), ".trc") {
-                        traceFiles = append(traceFiles, path)
-                }
-                return nil
-        })
-
-	if ferr != nil {
-		log.Panic(ferr)
-	}
-
-	logme("amount of files is: " + strconv.Itoa(len(traceFiles)))
-	logme("parallel degree will be: " + strconv.Itoa(*parallel))
-
-	var wg sync.WaitGroup
-	tracefileChannel := make(chan string, len(traceFiles))
-	logme("created tracefileChannel and now starting to fill it with file names")
-	for i:=0; i<len(traceFiles); i++ {
-		tracefileChannel <- traceFiles[i]
-	}
-	close(tracefileChannel)
-	logme("chnnel tracefileChannel filled with file names - it will be used for parallel workers, a Rafal ma malego..")
-
-	waitChannel := make(chan MapEvents, *parallel)
 	var me MapEvents
         me = make(map[string]*EventStats)
 
-	for i:=0; i<*parallel; i++ {
-		wg.Add(1)
-		logme("Starting worker: " + strconv.Itoa(i))
-		go func(wid int) {
-			t1 := time.Now()
-			logme("worker started " + strconv.Itoa(wid));
-			defer wg.Done()
-			for fname := range(tracefileChannel) {
-				events := parseTrace(fname, wid, tF, tT)
-				if events != nil {
-					waitChannel <- events
-				}
+	if !fileExists(saveFileName) {
+		//collect information about all trace files in a search directory
+		ferr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				log.Panic(err)
 			}
-			logme("worker stopped " + strconv.Itoa(wid) + fmt.Sprintf("\t time: %f", float64(time.Now().Sub(t1).Nanoseconds()/1000/1000)))
-		} (i)
-	}
-
-	go func() {
-                logme("Waiting for workers to stop")
-                wg.Wait()
-                close(waitChannel)
-                logme("Workers stopped - waitChannel closed")
-        }()
-
-	for events := range(waitChannel) {
-		logme("collecting data from channel")
-		for _, n := range(events) {
-			logme("\tthis was from warker: " + strconv.Itoa(n.Worker))
-			if _, ok := me[n.EventName]; !ok {
-				me[n.EventName] = n
-			} else {
-				me[n.EventName].Sum += n.Sum
-				me[n.EventName].Count += n.Count
-				me[n.EventName].Avg = me[n.EventName].Sum / float64(me[n.EventName].Count)
-				me[n.EventName].ElaTimes = append(me[n.EventName].ElaTimes, n.ElaTimes...) //te 3. zeby zlaczyc 2 tablice
-				for sqlid, ela := range(n.SQLtimes) {
-					if _, ok := me[n.EventName].SQLtimes[sqlid]; !ok {
-						me[n.EventName].SQLtimes[sqlid] = ela
-					} else {
-						me[n.EventName].SQLtimes[sqlid] += ela
-					}
-				}
+			if err == nil && !info.IsDir() && strings.HasSuffix(info.Name(), ".trc") {
+				traceFiles = append(traceFiles, path)
 			}
-			//me[n.EventName].CalcStdDev()
+			return nil
+		})
+
+		if ferr != nil {
+			log.Panic(ferr)
 		}
 
+		logme("amount of files is: " + strconv.Itoa(len(traceFiles)))
+		logme("parallel degree will be: " + strconv.Itoa(*parallel))
+
+		var wg sync.WaitGroup
+		tracefileChannel := make(chan string, len(traceFiles))
+		logme("created tracefileChannel and now starting to fill it with file names")
+		for i:=0; i<len(traceFiles); i++ {
+			tracefileChannel <- traceFiles[i]
+		}
+		close(tracefileChannel)
+		logme("chnnel tracefileChannel filled with file names - it will be used for parallel workers, a Rafal ma malego..")
+
+		waitChannel := make(chan MapEvents, *parallel)
+
+		for i:=0; i<*parallel; i++ {
+			wg.Add(1)
+			logme("Starting worker: " + strconv.Itoa(i))
+			go func(wid int) {
+				t1 := time.Now()
+				logme("worker started " + strconv.Itoa(wid));
+				defer wg.Done()
+				for fname := range(tracefileChannel) {
+					events := parseTrace(fname, wid, tF, tT)
+					if events != nil {
+						waitChannel <- events
+					}
+				}
+				logme("worker stopped " + strconv.Itoa(wid) + fmt.Sprintf("\t time: %f", float64(time.Now().Sub(t1).Nanoseconds()/1000/1000)))
+			} (i)
+		}
+
+		go func() {
+			logme("Waiting for workers to stop")
+			wg.Wait()
+			close(waitChannel)
+			logme("Workers stopped - waitChannel closed")
+		}()
+
+		for events := range(waitChannel) {
+			logme("collecting data from channel")
+			for _, n := range(events) {
+				logme("\tthis was from warker: " + strconv.Itoa(n.Worker))
+				if _, ok := me[n.EventName]; !ok {
+					me[n.EventName] = n
+				} else {
+					me[n.EventName].Sum += n.Sum
+					me[n.EventName].Count += n.Count
+					me[n.EventName].Avg = me[n.EventName].Sum / float64(me[n.EventName].Count)
+					me[n.EventName].ElaTimes = append(me[n.EventName].ElaTimes, n.ElaTimes...) //te 3. zeby zlaczyc 2 tablice
+					for sqlid, ela := range(n.SQLtimes) {
+						if _, ok := me[n.EventName].SQLtimes[sqlid]; !ok {
+							me[n.EventName].SQLtimes[sqlid] = ela
+						} else {
+							me[n.EventName].SQLtimes[sqlid] += ela
+						}
+					}
+				}
+				//me[n.EventName].CalcStdDev()
+			}
+
+		}
+
+
+		//remember the structure map
+		var eventBin bytes.Buffer
+		enc := gob.NewEncoder(&eventBin)
+		err := enc.Encode(me)
+		if err != nil {
+			log.Panic(err)
+		}
+
+		eventBinF, errf := os.Create(saveFileName)
+		if errf != nil {
+			log.Panic(errf)
+		}
+
+		eventBin.WriteTo(eventBinF)
+		eventBinF.Close()
+		/////////////////////////////////
+	} else { //and read the structure map
+		var eventBin bytes.Buffer
+		dec := gob.NewDecoder(&eventBin)
+		eventBinF, errf := os.Open(saveFileName)
+		if errf != nil {
+			log.Panic(errf)
+		}
+
+		eventBin.ReadFrom(eventBinF)
+		dec.Decode(&me)
 	}
 
-	var events []EventStats
-	for _, ev := range(me) {
-		ev.CalcStdDev()
-		events = append(events, *ev)
-	}
 	if *eventName != "" {
 		sqlEla := float64(0)
 		fmt.Printf("SQLs for event %s\n", *eventName)
+		var sqlTimes SQLStats
 		for sqlid, ela := range(me[*eventName].SQLtimes) {
-			fmt.Printf("%s\t\t%f\n", sqlid, ela/1000)
+			sqlTimes = append(sqlTimes, SQLStat{SQLid: sqlid, Ela: ela})
 			sqlEla += ela
 		}
-	} else {
+		sort.Sort(sqlTimes)
+		for _, s := range(sqlTimes) {
+			fmt.Printf("%s\t\t%f\n", s.SQLid, s.Ela/1000)
+		}
+	} else if *sqlId != "" {
+		fmt.Println("Wait events for this SQLid")
+		var events []EventStats
+		for _, eventStat := range(me) {
+			if _, ok := eventStat.SQLtimes[*sqlId]; ok {
+				eventStat.CalcStdDev()
+				events = append(events, *eventStat)
+			}
+		}
+		showStats(events)
+	}else {
+		var events []EventStats
+                for _, ev := range(me) {
+                        ev.CalcStdDev()
+                        events = append(events, *ev)
+                }
 		showStats(events)
 	}
 	fmt.Println("Everythong took: " + fmt.Sprintf("%f", time.Now().Sub(tB).Seconds()*1000))
