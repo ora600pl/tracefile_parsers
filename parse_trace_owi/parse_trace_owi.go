@@ -158,10 +158,6 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 				eventMap[eventName].EventClass = eventClassName
 
 				cursor_id := traceWords[1][0:len(traceWords[1])-1]
-				if cursor_id == "#140479009929120" && eventName == "'cursor: pin S wait on X'" {
-					_, tst := eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]]
-					logme("LOST: " + cursor_id + " " + eventName + " " + strconv.FormatBool(tst))
-				}
 				if _, ok := cursorToSQLid[cursor_id]; ok {
 					if _, ok2 := eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]]; !ok2 {
 						eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]] = float64(eventEla)
@@ -345,10 +341,22 @@ func main() {
 		dec.Decode(&me)
 	}
 
+	sqlIDsEla := make(map[string]float64)
+	for _, es := range(me) {
+		for sqlid, ela := range(es.SQLtimes) {
+			if _, ok := sqlIDsEla[sqlid]; !ok {
+				sqlIDsEla[sqlid] = ela
+			} else {
+				sqlIDsEla[sqlid] += ela
+			}
+		}
+	}
+
 	if *eventName != "" {
 		sqlEla := float64(0)
 		fmt.Printf("SQLs for event %s\n", *eventName)
 		var sqlTimes SQLStats
+		sqlCnt := uint64(0)
 		for sqlid, ela := range(me[*eventName].SQLtimes) {
 			sqlTimes = append(sqlTimes, SQLStat{SQLid: sqlid, Ela: ela})
 			sqlEla += ela
@@ -356,7 +364,10 @@ func main() {
 		sort.Sort(sqlTimes)
 		for _, s := range(sqlTimes) {
 			fmt.Printf("%s\t\t%f\n", s.SQLid, s.Ela/1000)
+			sqlCnt += 1
 		}
+		fmt.Printf("It was %f percent out of all SQLs - %d out of %d\n", float64(sqlCnt)/float64(len(sqlIDsEla))*100, sqlCnt, len(sqlIDsEla))
+
 	} else if *sqlId != "" {
 		fmt.Println("Wait events for this SQLid")
 		var events []EventStats
@@ -375,6 +386,6 @@ func main() {
                 }
 		showStats(events)
 	}
-	fmt.Println("Everythong took: " + fmt.Sprintf("%f", time.Now().Sub(tB).Seconds()*1000))
+	fmt.Println("Everythong took: " + fmt.Sprintf("%f", time.Now().Sub(tB).Seconds()*1000) + " ms")
 }
 
