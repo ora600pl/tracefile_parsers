@@ -92,14 +92,20 @@ func (a SQLStats) Len() int           { return len(a) }
 func (a SQLStats) Less(i, j int) bool { return a[j].Ela > a[i].Ela }
 func (a SQLStats) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
-func showStats(events []EventStats) {
+func showStats(events []EventStats, topN *int) {
 	sort.Sort(EventStatsSbSum(events))
 	logme("Events sorted by elapsed time sum")
 	fmt.Printf("%60s\t\t%s\t\t\t%s\t\t%s\t\t\t%s\t\t%s\n\n", "WAIT EVENT", "ELA(ms)", "COUNT", "AVG(ms)", "STDDEV(ms)", "CLASS")
-
-	for _, event := range events {
-		event.CalcStdDev()
-		fmt.Printf("%60s\t\t%f\t\t%d\t\t%f\t\t%f\t\t%s\n", event.EventName, event.Sum/1000, event.Count, event.Avg/1000, event.StdDev/1000, event.EventClass)
+	listLen := len(events)
+	limit := -1
+	if *topN > 0 {
+		limit = listLen - *topN - 1
+	}
+	for i, event := range events {
+		if i > limit {
+			event.CalcStdDev()
+			fmt.Printf("%60s\t\t%f\t\t%d\t\t%f\t\t%f\t\t%s\n", event.EventName, event.Sum/1000, event.Count, event.Avg/1000, event.StdDev/1000, event.EventClass)
+		}
 	}
 
 }
@@ -200,6 +206,7 @@ func main() {
 	timeTo_s := flag.String("tt", "2020-01-02 00:00:00.100", "time to")
 	eventName := flag.String("event", "", "Display SQLids for specified event")
 	sqlId := flag.String("sqlid","", "Display wait events for sqlid")
+	topN := flag.Int("top", 0, "Only TOP n elements")
 
         flag.Parse()
 
@@ -372,8 +379,15 @@ func main() {
 			sqlEla += ela.Sum
 		}
 		sort.Sort(sqlTimes)
-		for _, s := range(sqlTimes) {
-			fmt.Printf("%s\t\t%f\n", s.SQLid, s.Ela/1000)
+		listLen := len(sqlTimes)
+		limit := -1
+		if *topN > 0 {
+			limit = listLen - *topN - 1
+		}
+		for i, s := range(sqlTimes) {
+			if i > limit {
+				fmt.Printf("%s\t\t%f\n", s.SQLid, s.Ela/1000)
+			}
 			sqlCnt += 1
 		}
 		fmt.Printf("It was %f percent out of all SQLs - %d out of %d\n", float64(sqlCnt)/float64(len(sqlIDsEla))*100, sqlCnt, len(sqlIDsEla))
@@ -390,13 +404,13 @@ func main() {
 				events = append(events, *eventStat)
 			}
 		}
-		showStats(events)
+		showStats(events, topN)
 	}else {
 		var events []EventStats
                 for _, ev := range(me) {
                         events = append(events, *ev)
                 }
-		showStats(events)
+		showStats(events, topN)
 	}
 	fmt.Println("Everythong took: " + fmt.Sprintf("%f", time.Now().Sub(tB).Seconds()*1000) + " ms")
 }
