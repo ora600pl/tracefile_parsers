@@ -53,6 +53,12 @@ func StdDev(x []int64) float64 {
         return sd
 }
 
+type SQLEventStats struct {
+	Sum float64
+	Count int64
+	ElaTimes []int64
+}
+
 //struct for event data
 type EventStats struct {
 	EventName string
@@ -63,7 +69,7 @@ type EventStats struct {
         StdDev float64
 	ElaTimes []int64
 	Worker int
-	SQLtimes map[string]float64
+	SQLtimes map[string]*SQLEventStats
 }
 
 //calculate StdDev for events
@@ -92,6 +98,7 @@ func showStats(events []EventStats) {
 	fmt.Printf("%60s\t\t%s\t\t\t%s\t\t%s\t\t\t%s\t\t%s\n\n", "WAIT EVENT", "ELA(ms)", "COUNT", "AVG(ms)", "STDDEV(ms)", "CLASS")
 
 	for _, event := range events {
+		event.CalcStdDev()
 		fmt.Printf("%60s\t\t%f\t\t%d\t\t%f\t\t%f\t\t%s\n", event.EventName, event.Sum/1000, event.Count, event.Avg/1000, event.StdDev/1000, event.EventClass)
 	}
 
@@ -146,7 +153,7 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 									  Avg: 0,
 									  StdDev: 0,
 									  Worker: -1,
-									  SQLtimes: make(map[string]float64),
+									  SQLtimes: make(map[string]*SQLEventStats),
 									  }
 				}
 				eventMap[eventName].EventName = eventName
@@ -160,10 +167,11 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 				cursor_id := traceWords[1][0:len(traceWords[1])-1]
 				if _, ok := cursorToSQLid[cursor_id]; ok {
 					if _, ok2 := eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]]; !ok2 {
-						eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]] = float64(eventEla)
-					} else {
-						eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]] += float64(eventEla)
+						eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]] = &SQLEventStats{Sum: 0, Count: 0}
 					}
+					eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].Sum += float64(eventEla)
+					eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].Count += 1
+					eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].ElaTimes = append(eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].ElaTimes, int64(eventEla))
 					logme("SQLID for cursor: " + cursor_id + " " + cursorToSQLid[cursor_id] + " " + eventName + " " + traceFile)
 				}
 			}
@@ -299,11 +307,13 @@ func main() {
 					me[n.EventName].Count += n.Count
 					me[n.EventName].Avg = me[n.EventName].Sum / float64(me[n.EventName].Count)
 					me[n.EventName].ElaTimes = append(me[n.EventName].ElaTimes, n.ElaTimes...) //te 3. zeby zlaczyc 2 tablice
-					for sqlid, ela := range(n.SQLtimes) {
+					for sqlid, sqlstat := range(n.SQLtimes) {
 						if _, ok := me[n.EventName].SQLtimes[sqlid]; !ok {
-							me[n.EventName].SQLtimes[sqlid] = ela
+							me[n.EventName].SQLtimes[sqlid] = sqlstat
 						} else {
-							me[n.EventName].SQLtimes[sqlid] += ela
+							me[n.EventName].SQLtimes[sqlid].Sum += sqlstat.Sum
+							me[n.EventName].SQLtimes[sqlid].Count += sqlstat.Count
+							me[n.EventName].SQLtimes[sqlid].ElaTimes = append(me[n.EventName].SQLtimes[sqlid].ElaTimes, sqlstat.ElaTimes...)
 						}
 					}
 				}
@@ -345,9 +355,9 @@ func main() {
 	for _, es := range(me) {
 		for sqlid, ela := range(es.SQLtimes) {
 			if _, ok := sqlIDsEla[sqlid]; !ok {
-				sqlIDsEla[sqlid] = ela
+				sqlIDsEla[sqlid] = ela.Sum
 			} else {
-				sqlIDsEla[sqlid] += ela
+				sqlIDsEla[sqlid] += ela.Sum
 			}
 		}
 	}
@@ -358,8 +368,8 @@ func main() {
 		var sqlTimes SQLStats
 		sqlCnt := uint64(0)
 		for sqlid, ela := range(me[*eventName].SQLtimes) {
-			sqlTimes = append(sqlTimes, SQLStat{SQLid: sqlid, Ela: ela})
-			sqlEla += ela
+			sqlTimes = append(sqlTimes, SQLStat{SQLid: sqlid, Ela: ela.Sum})
+			sqlEla += ela.Sum
 		}
 		sort.Sort(sqlTimes)
 		for _, s := range(sqlTimes) {
@@ -372,8 +382,11 @@ func main() {
 		fmt.Println("Wait events for this SQLid")
 		var events []EventStats
 		for _, eventStat := range(me) {
-			if _, ok := eventStat.SQLtimes[*sqlId]; ok {
-				eventStat.CalcStdDev()
+			if stat, ok := eventStat.SQLtimes[*sqlId]; ok {
+				eventStat.Sum = stat.Sum
+				eventStat.Count = stat.Count
+				eventStat.Avg = stat.Sum / float64(stat.Count)
+				eventStat.ElaTimes = stat.ElaTimes
 				events = append(events, *eventStat)
 			}
 		}
@@ -381,7 +394,6 @@ func main() {
 	}else {
 		var events []EventStats
                 for _, ev := range(me) {
-                        ev.CalcStdDev()
                         events = append(events, *ev)
                 }
 		showStats(events)
