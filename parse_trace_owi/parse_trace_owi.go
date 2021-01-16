@@ -57,6 +57,7 @@ type SQLEventStats struct {
 	Sum float64
 	Count int64
 	ElaTimes []int64
+	PossibleOperations []string
 }
 
 //struct for event data
@@ -92,6 +93,18 @@ func (a SQLStats) Len() int           { return len(a) }
 func (a SQLStats) Less(i, j int) bool { return a[j].Ela > a[i].Ela }
 func (a SQLStats) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
+func removeDupString(strSlice []string) []string {
+	keys := make(map[string]bool)
+	list := []string{}
+	for _, entry := range strSlice {
+		if _, value := keys[entry]; !value {
+			keys[entry] = true
+			list = append(list, entry)
+		}
+    }
+    return list
+}
+
 func showStats(events []EventStats, topN *int) {
 	sort.Sort(EventStatsSbSum(events))
 	logme("Events sorted by elapsed time sum")
@@ -126,6 +139,11 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 	discoveredTraceDate := false
 
 	cursorToSQLid := make(map[string]string)
+	type cursorObjKey struct {
+		objId string
+		cursorId string
+	}
+	cursorObjToOp := make(map[cursorObjKey][]string)
 
 	for scanner.Scan() {
 		traceLine := scanner.Text()
@@ -179,6 +197,17 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 					eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].Count += 1
 					eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].ElaTimes = append(eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].ElaTimes, int64(eventEla))
 					logme("SQLID for cursor: " + cursor_id + " " + cursorToSQLid[cursor_id] + " " + eventName + " " + traceFile)
+					if strings.Index(traceLine, "obj#=") > 0 {
+						objId := traceWords[len(traceWords)-3]
+						logme("Looking for operation map for objd: " + objId + " sqlid: " + cursorToSQLid[cursor_id])
+						if v, ok3 := cursorObjToOp[cursorObjKey{objId, cursor_id}]; ok3 {
+							logme("Found: " + v[0])
+							eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].PossibleOperations = append(eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].PossibleOperations, v...)
+						} else {
+							logme("Not found - creating a placeholder to fill later - STAT section is usually after WAIT section")
+							eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].PossibleOperations = append(eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].PossibleOperations, objId + " " + cursor_id)
+						}
+					}
 				}
 			}
 		} else if strings.HasPrefix(traceLine, "PARSING IN CURSOR") {
@@ -186,6 +215,33 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 			sql_id := traceWords[len(traceWords)-1]
 			logme("SQLID for cursor: " + cursor_id + " " + sql_id)
 			cursorToSQLid[cursor_id] = sql_id
+		} else if strings.HasPrefix(traceLine, "STAT #") {
+			cursor_id := traceWords[1]
+			objId :=traceWords[11]
+			foundElem := false
+			for _, opname := range(cursorObjToOp[cursorObjKey{objId, cursor_id}]) {
+				if opname == traceWords[len(traceWords)-1] {
+					foundElem = true
+				}
+			}
+			if !foundElem {
+				cursorObjToOp[cursorObjKey{objId, cursor_id}] = append(cursorObjToOp[cursorObjKey{objId, cursor_id}], traceWords[len(traceWords)-1])
+			}
+			logme("OP for cursor: " + cursor_id + " obj: " + objId + " op: " + traceWords[len(traceWords)-1] + " sqlid: " + cursorToSQLid[cursor_id])
+			for _, ev := range(eventMap) {
+				if sqlstat, sqlidOk := ev.SQLtimes[cursorToSQLid[cursor_id]]; sqlidOk {
+					for i, op := range(sqlstat.PossibleOperations) {
+						if objId + " " + cursor_id == op {
+							if len(cursorObjToOp[cursorObjKey{objId, cursor_id}]) == 1 {
+								sqlstat.PossibleOperations[i] = cursorObjToOp[cursorObjKey{objId, cursor_id}][0]
+							} else if len(cursorObjToOp[cursorObjKey{objId, cursor_id}]) > 1 {
+								sqlstat.PossibleOperations[i] = cursorObjToOp[cursorObjKey{objId, cursor_id}][0]
+								sqlstat.PossibleOperations = append(sqlstat.PossibleOperations, cursorObjToOp[cursorObjKey{objId, cursor_id}][1:]...)
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 	return eventMap
@@ -321,7 +377,9 @@ func main() {
 							me[n.EventName].SQLtimes[sqlid].Sum += sqlstat.Sum
 							me[n.EventName].SQLtimes[sqlid].Count += sqlstat.Count
 							me[n.EventName].SQLtimes[sqlid].ElaTimes = append(me[n.EventName].SQLtimes[sqlid].ElaTimes, sqlstat.ElaTimes...)
+							me[n.EventName].SQLtimes[sqlid].PossibleOperations = append(me[n.EventName].SQLtimes[sqlid].PossibleOperations, sqlstat.PossibleOperations...)
 						}
+						me[n.EventName].SQLtimes[sqlid].PossibleOperations = removeDupString(me[n.EventName].SQLtimes[sqlid].PossibleOperations)
 					}
 				}
 				//me[n.EventName].CalcStdDev()
@@ -369,7 +427,7 @@ func main() {
 		}
 	}
 
-	if *eventName != "" {
+	if *eventName != "" && *sqlId == "" {
 		sqlEla := float64(0)
 		fmt.Printf("SQLs for event %s\n", *eventName)
 		var sqlTimes SQLStats
@@ -392,7 +450,7 @@ func main() {
 		}
 		fmt.Printf("It was %f percent out of all SQLs - %d out of %d\n", float64(sqlCnt)/float64(len(sqlIDsEla))*100, sqlCnt, len(sqlIDsEla))
 
-	} else if *sqlId != "" {
+	} else if *sqlId != "" && *eventName == "" {
 		fmt.Println("Wait events for this SQLid")
 		var events []EventStats
 		for _, eventStat := range(me) {
@@ -405,7 +463,12 @@ func main() {
 			}
 		}
 		showStats(events, topN)
-	}else {
+	} else if *sqlId != "" && *eventName != "" {
+		fmt.Println("Possible operations for wait event " + *eventName + " and SQLID " + *sqlId)
+		for _, v := range(me[*eventName].SQLtimes[*sqlId].PossibleOperations) {
+			fmt.Println(v)
+		}
+	} else {
 		var events []EventStats
                 for _, ev := range(me) {
                         events = append(events, *ev)
