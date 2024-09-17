@@ -15,7 +15,6 @@ import (
 	"sort"
 	"runtime/pprof"
 	"time"
-	"eventclass"
 	"encoding/gob"
 	"bytes"
        )
@@ -157,7 +156,7 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 				traceTime, _ = time.Parse(layout, traceLine[4:])
 			}
 			if !(traceTime.After(tF) && traceTime.Before(tT)) {
-				logme("ignored file: " + traceFile)
+				logme("ignored file: " + traceFile + " with traceTime = " + traceTime.String() + " with params " + tF.String() + " " + tT.String())
 				return nil
 			}
 			discoveredTraceDate = true
@@ -166,7 +165,7 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 		if strings.HasPrefix(traceLine, "WAIT #") {
 			eventName := traceWords[3]
 			eventEla, _ := strconv.Atoi(traceWords[5])
-			eventClassName := eventclass.GetClass(eventName)
+			eventClassName := GetClass(eventName)
 
 			if eventClassName != "Idle" && eventClassName != "Other" {
 				if _, ok := eventMap[eventName]; !ok {
@@ -204,7 +203,7 @@ func parseTrace(traceFile string, workerId int, tF time.Time, tT time.Time) MapE
 							logme("Found: " + v[0])
 							eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].PossibleOperations = append(eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].PossibleOperations, v...)
 						} else {
-							logme("Not found - creating a placeholder to fill later - STAT section is usually after WAIT section")
+							logme("Not found - creating a placeholder to fill later")
 							eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].PossibleOperations = append(eventMap[eventName].SQLtimes[cursorToSQLid[cursor_id]].PossibleOperations, objId + " " + cursor_id)
 						}
 					}
@@ -253,7 +252,7 @@ var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 
 
 func main() {
-	eventclass.InitClassMap()
+	InitClassMap()
 	tB := time.Now()
 	debug := flag.String("d", "false", "debug")
 	searchDir := flag.String("s", "", "where to search for trace files")

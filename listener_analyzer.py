@@ -26,7 +26,7 @@ class ListenerLog(object):
 
         for fname in os.listdir(self.dirname):
             if fname.find(self.name_pattern) >= 0:
-                listener_log = open(self.dirname + "/" + fname, "r").readlines()
+                listener_log = open(self.dirname + "/" + fname, "r", errors="ignore").readlines()
                 for log_line in listener_log:
                     log_fields = log_line.split("*")
 
